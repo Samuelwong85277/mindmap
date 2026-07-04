@@ -45,6 +45,58 @@ body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; b
 .toolbar .status { font-size: 12px; color: #999; }
 
 /* Main layout */
+.doc-sidebar {
+  width: 240px; border-right: 1px solid var(--border); background: var(--sidebar-bg);
+  display: flex; flex-direction: column; flex-shrink: 0; overflow: hidden; transition: width 0.2s;
+}
+.doc-sidebar.collapsed { width: 0; border-right: none; }
+.doc-sidebar-header {
+  padding: 10px 12px; display: flex; align-items: center; gap: 6px;
+  border-bottom: 1px solid var(--border); font-size: 12px; font-weight: 600;
+}
+.doc-sidebar-header .actions { margin-left: auto; display: flex; gap: 2px; }
+.doc-sidebar-header .actions button {
+  width: 24px; height: 24px; border: none; background: none; cursor: pointer;
+  border-radius: 4px; font-size: 14px; display: flex; align-items: center; justify-content: center;
+  color: #999; transition: var(--transition);
+}
+.doc-sidebar-header .actions button:hover { background: var(--hover); color: var(--text); }
+.doc-tree { flex: 1; overflow-y: auto; padding: 4px 0; }
+.doc-folder { margin: 2px 0; }
+.doc-folder-header {
+  display: flex; align-items: center; padding: 4px 8px; cursor: pointer; font-size: 12px;
+  border-radius: 4px; margin: 0 4px; color: #888; gap: 4px;
+}
+.doc-folder-header:hover { background: var(--hover); }
+.doc-folder-header .arrow { font-size: 8px; transition: transform 0.15s; width: 12px; text-align: center; }
+.doc-folder-header .arrow.open { transform: rotate(90deg); }
+.doc-folder-header .folder-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.doc-folder-children { padding-left: 8px; }
+.doc-item {
+  display: flex; align-items: center; padding: 5px 8px 5px 20px; cursor: pointer;
+  font-size: 12px; border-radius: 4px; margin: 1px 4px; gap: 4px;
+  transition: var(--transition);
+}
+.doc-item:hover { background: var(--hover); }
+.doc-item.active { background: var(--accent-light); color: var(--accent); font-weight: 500; }
+.doc-item .doc-icon { font-size: 11px; flex-shrink: 0; }
+.doc-item .doc-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.doc-item .doc-actions { display: none; gap: 2px; }
+.doc-item:hover .doc-actions { display: flex; }
+.doc-item .doc-actions button {
+  width: 18px; height: 18px; border: none; background: none; cursor: pointer;
+  border-radius: 3px; font-size: 10px; color: #999; display: flex; align-items: center; justify-content: center;
+}
+.doc-item .doc-actions button:hover { background: #ddd; color: #333; }
+.doc-folder .add-doc-btn {
+  display: none; padding: 3px 8px 3px 20px; font-size: 11px; color: #999;
+  cursor: pointer; border: none; background: none; width: 100%; text-align: left;
+  border-radius: 4px; margin: 1px 4px;
+}
+.doc-folder:hover .add-doc-btn, .doc-folder-header:hover + .add-doc-btn { display: block; }
+.doc-folder .add-doc-btn:hover { background: var(--hover); color: var(--accent); }
+
+/* Main layout */
 .main { display: flex; flex: 1; overflow: hidden; position: relative; }
 
 /* Outline panel */
@@ -199,9 +251,23 @@ body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; b
   <button id="btnTheme" onclick="toggleTheme()">🌓</button>
   <button onclick="showImport()">📤 导入</button>
   <button onclick="showExport()">📥 导出</button>
+  <span class="sep"></span>
+  <button onclick="toggleDocSidebar()" title="文档列表">📂</button>
   <span class="spacer"></span>
   <span class="status" id="collabStatus">💾 本地模式</span>
   <button onclick="showCollab()" id="btnCollab">👥 协作</button>
+</div>
+
+<!-- Doc Sidebar -->
+<div class="doc-sidebar" id="docSidebar">
+  <div class="doc-sidebar-header">
+    📁 文档
+    <div class="actions">
+      <button onclick="addFolder()" title="新建文件夹">📁+</button>
+      <button onclick="addDocument()" title="新建脑图">🧠+</button>
+    </div>
+  </div>
+  <div class="doc-tree" id="docTree"></div>
 </div>
 
 <!-- Main -->
@@ -271,6 +337,8 @@ body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; b
 
 <script>
 // ==================== DATA MODEL ====================
+// Workspace: multi-document with folders
+let workspace = { folders: [], docs: {}, activeDocId: null, activeFolderId: null };
 let docName = '未命名思维导图';
 let nodeIdCounter = 1;
 let tree = { id: 'root', title: '中心主题', children: [], collapsed: false, color: 0 };
@@ -282,6 +350,8 @@ let currentView = 'outline';
 const branchColors = ['#4f46e5','#059669','#d97706','#dc2626','#7c3aed','#0891b2','#be185d','#65a30d'];
 
 function newNodeId() { return 'n' + (nodeIdCounter++); }
+function genDocId() { return 'd' + Date.now().toString(36) + Math.random().toString(36).substring(2,6); }
+function genFolderId() { return 'f' + Date.now().toString(36); }
 
 function findNode(id, root) {
   if (root.id === id) return root;
@@ -301,14 +371,336 @@ function findParent(id, root, parent = null) {
   return undefined;
 }
 
-function cloneTree(node) {
-  return JSON.parse(JSON.stringify(node));
-}
+function cloneTree(node) { return JSON.parse(JSON.stringify(node)); }
 
 function pushUndo() {
   undoStack.push(cloneTree(tree));
   if (undoStack.length > 100) undoStack.shift();
   redoStack = [];
+}
+
+// ==================== MULTI-DOC MANAGEMENT ====================
+function renderDocTree() {
+  const container = document.getElementById('docTree');
+  if (!container) return;
+  container.innerHTML = '';
+  
+  workspace.folders.forEach(folder => {
+    const folderDiv = document.createElement('div');
+    folderDiv.className = 'doc-folder';
+    
+    // Folder header
+    const header = document.createElement('div');
+    header.className = 'doc-folder-header';
+    const arrow = document.createElement('span');
+    arrow.className = 'arrow' + (folder._collapsed ? '' : ' open');
+    arrow.textContent = '▶';
+    arrow.onclick = (e) => { e.stopPropagation(); folder._collapsed = !folder._collapsed; renderDocTree(); };
+    header.appendChild(arrow);
+    
+    const icon = document.createElement('span');
+    icon.textContent = folder._collapsed ? '📁' : '📂';
+    header.appendChild(icon);
+    
+    const nameSpan = document.createElement('span');
+    nameSpan.className = 'folder-name';
+    nameSpan.textContent = folder.name;
+    nameSpan.ondblclick = (e) => {
+      e.stopPropagation();
+      const newName = prompt('重命名文件夹：', folder.name);
+      if (newName && newName.trim()) { folder.name = newName.trim(); renderDocTree(); saveWorkspace(); }
+    };
+    header.appendChild(nameSpan);
+    
+    folderDiv.appendChild(header);
+    
+    // Folder children (documents)
+    if (!folder._collapsed) {
+      const childrenDiv = document.createElement('div');
+      childrenDiv.className = 'doc-folder-children';
+      
+      (folder.docs || []).forEach(docId => {
+        const doc = workspace.docs[docId];
+        if (!doc) return;
+        const item = document.createElement('div');
+        item.className = 'doc-item' + (workspace.activeDocId === docId ? ' active' : '');
+        item.draggable = true;
+        
+        const docIcon = document.createElement('span');
+        docIcon.className = 'doc-icon';
+        docIcon.textContent = '🧠';
+        item.appendChild(docIcon);
+        
+        const docNameEl = document.createElement('span');
+        docNameEl.className = 'doc-name';
+        docNameEl.textContent = doc.name || '未命名';
+        item.appendChild(docNameEl);
+        
+        const actions = document.createElement('span');
+        actions.className = 'doc-actions';
+        const renameBtn = document.createElement('button');
+        renameBtn.textContent = '✏️';
+        renameBtn.title = '重命名';
+        renameBtn.onclick = (e) => { e.stopPropagation(); renameDocument(docId); };
+        actions.appendChild(renameBtn);
+        const delBtn = document.createElement('button');
+        delBtn.textContent = '🗑️';
+        delBtn.title = '删除';
+        delBtn.onclick = (e) => { e.stopPropagation(); deleteDocument(docId); };
+        actions.appendChild(delBtn);
+        item.appendChild(actions);
+        
+        item.onclick = () => switchDocument(docId);
+        
+        // Drag
+        item.addEventListener('dragstart', (e) => { e.dataTransfer.setData('text/plain', docId); item.style.opacity = '0.5'; });
+        item.addEventListener('dragend', () => { item.style.opacity = '1'; });
+        
+        childrenDiv.appendChild(item);
+      });
+      
+      // Add doc button
+      const addBtn = document.createElement('button');
+      addBtn.className = 'add-doc-btn';
+      addBtn.textContent = '+ 新建脑图';
+      addBtn.onclick = () => addDocumentToFolder(folder.id);
+      childrenDiv.appendChild(addBtn);
+      
+      // Drop target for docs
+      childrenDiv.addEventListener('dragover', (e) => { e.preventDefault(); });
+      childrenDiv.addEventListener('drop', (e) => {
+        e.preventDefault();
+        const docId = e.dataTransfer.getData('text/plain');
+        if (docId && workspace.docs[docId]) {
+          moveDocumentToFolder(docId, folder.id);
+        }
+      });
+      
+      folderDiv.appendChild(childrenDiv);
+    }
+    
+    container.appendChild(folderDiv);
+  });
+  
+  // Root-level documents (not in any folder)
+  const orphanDocs = Object.keys(workspace.docs).filter(did => {
+    return !workspace.folders.some(f => (f.docs || []).includes(did));
+  });
+  if (orphanDocs.length > 0) {
+    const orphanDiv = document.createElement('div');
+    orphanDiv.style.padding = '4px 8px';
+    orphanDiv.style.fontSize = '11px';
+    orphanDiv.style.color = '#999';
+    orphanDiv.textContent = '未分类';
+    container.appendChild(orphanDiv);
+    orphanDocs.forEach(docId => {
+      const doc = workspace.docs[docId];
+      const item = document.createElement('div');
+      item.className = 'doc-item' + (workspace.activeDocId === docId ? ' active' : '');
+      item.innerHTML = `<span class="doc-icon">🧠</span><span class="doc-name">${doc.name||'未命名'}</span>`;
+      item.onclick = () => switchDocument(docId);
+      container.appendChild(item);
+    });
+  }
+}
+
+function addFolder() {
+  const name = prompt('文件夹名称：', '新文件夹');
+  if (!name || !name.trim()) return;
+  const folder = { id: genFolderId(), name: name.trim(), docs: [], _collapsed: false };
+  workspace.folders.push(folder);
+  renderDocTree();
+  saveWorkspace();
+}
+
+function addDocument() { addDocumentToFolder(null); }
+
+function addDocumentToFolder(folderId) {
+  const name = prompt('脑图名称：', '新思维导图');
+  if (!name || !name.trim()) return;
+  const docId = genDocId();
+  workspace.docs[docId] = {
+    id: docId, name: name.trim(),
+    tree: { id: 'root', title: '中心主题', children: [], collapsed: false, color: 0 },
+    updatedAt: Date.now()
+  };
+  if (folderId) {
+    const folder = workspace.folders.find(f => f.id === folderId);
+    if (folder) folder.docs.push(docId);
+  }
+  saveWorkspace();
+  switchDocument(docId);
+  renderDocTree();
+}
+
+function switchDocument(docId) {
+  // Save current
+  if (workspace.activeDocId && workspace.docs[workspace.activeDocId]) {
+    workspace.docs[workspace.activeDocId].tree = cloneTree(tree);
+    workspace.docs[workspace.activeDocId].updatedAt = Date.now();
+  }
+  // Load new
+  const doc = workspace.docs[docId];
+  if (!doc) return;
+  workspace.activeDocId = docId;
+  tree = cloneTree(doc.tree);
+  docName = doc.name;
+  document.getElementById('docName').value = docName;
+  nodeIdCounter = countMaxId(tree) + 1;
+  activeNodeId = tree.id;
+  undoStack = []; redoStack = [];
+  renderOutline();
+  if (currentView !== 'outline') renderMindmap();
+  renderDocTree();
+  saveWorkspace();
+  showToast('📄 切换到: ' + doc.name);
+}
+
+function countMaxId(node) {
+  let max = 0;
+  const match = node.id.match(/\d+/);
+  if (match) max = Math.max(max, parseInt(match[0]));
+  (node.children || []).forEach(c => { max = Math.max(max, countMaxId(c)); });
+  return max;
+}
+
+function renameDocument(docId) {
+  const doc = workspace.docs[docId];
+  if (!doc) return;
+  const newName = prompt('重命名：', doc.name);
+  if (newName && newName.trim()) {
+    doc.name = newName.trim();
+    if (docId === workspace.activeDocId) {
+      docName = doc.name;
+      document.getElementById('docName').value = docName;
+    }
+    renderDocTree();
+    saveWorkspace();
+  }
+}
+
+function deleteDocument(docId) {
+  const doc = workspace.docs[docId];
+  if (!doc) return;
+  if (!confirm(`确定删除 "${doc.name}"？此操作不可恢复。`)) return;
+  
+  // Remove from folder
+  workspace.folders.forEach(f => { f.docs = (f.docs || []).filter(d => d !== docId); });
+  delete workspace.docs[docId];
+  
+  if (workspace.activeDocId === docId) {
+    // Find another doc to switch to
+    const remaining = Object.keys(workspace.docs);
+    if (remaining.length > 0) {
+      switchDocument(remaining[0]);
+    } else {
+      // Create a default doc
+      workspace.activeDocId = null;
+      addDocument();
+    }
+  }
+  renderDocTree();
+  saveWorkspace();
+  showToast('🗑️ 已删除');
+}
+
+function moveDocumentToFolder(docId, folderId) {
+  // Remove from old folders
+  workspace.folders.forEach(f => { f.docs = (f.docs || []).filter(d => d !== docId); });
+  // Add to new folder
+  const folder = workspace.folders.find(f => f.id === folderId);
+  if (folder) {
+    if (!folder.docs.includes(docId)) folder.docs.push(docId);
+  }
+  renderDocTree();
+  saveWorkspace();
+}
+
+function toggleDocSidebar() {
+  const sidebar = document.getElementById('docSidebar');
+  sidebar.classList.toggle('collapsed');
+}
+
+// ==================== SAVE / LOAD ====================
+function saveWorkspace() {
+  // Sync current doc
+  if (workspace.activeDocId && workspace.docs[workspace.activeDocId]) {
+    workspace.docs[workspace.activeDocId].tree = cloneTree(tree);
+    workspace.docs[workspace.activeDocId].name = docName;
+    workspace.docs[workspace.activeDocId].updatedAt = Date.now();
+  }
+  localStorage.setItem('mindmap-workspace', JSON.stringify(workspace));
+  scheduleSave();
+}
+
+function scheduleSave() {
+  clearTimeout(window._saveTimeout);
+  window._saveTimeout = setTimeout(() => {
+    if (workspace.activeDocId && workspace.docs[workspace.activeDocId]) {
+      workspace.docs[workspace.activeDocId].tree = cloneTree(tree);
+    }
+    localStorage.setItem('mindmap-workspace', JSON.stringify(workspace));
+  }, 500);
+}
+
+function saveLocal() { saveWorkspace(); }
+
+function loadLocal() {
+  const raw = localStorage.getItem('mindmap-workspace');
+  if (raw) {
+    try {
+      workspace = JSON.parse(raw);
+      // Ensure structure
+      if (!workspace.folders) workspace.folders = [];
+      if (!workspace.docs) workspace.docs = {};
+      
+      // Load active doc
+      const docIds = Object.keys(workspace.docs);
+      if (workspace.activeDocId && workspace.docs[workspace.activeDocId]) {
+        const doc = workspace.docs[workspace.activeDocId];
+        tree = doc.tree || { id: 'root', title: '中心主题', children: [], collapsed: false, color: 0 };
+        docName = doc.name || '未命名思维导图';
+        nodeIdCounter = countMaxId(tree) + 1;
+        activeNodeId = tree.id;
+      } else if (docIds.length > 0) {
+        workspace.activeDocId = docIds[0];
+        const doc = workspace.docs[docIds[0]];
+        tree = doc.tree || { id: 'root', title: '中心主题', children: [], collapsed: false, color: 0 };
+        docName = doc.name || '未命名思维导图';
+        nodeIdCounter = countMaxId(tree) + 1;
+        activeNodeId = tree.id;
+      } else {
+        // Create default
+        tree = { id: 'root', title: '中心主题', children: [], collapsed: false, color: 0 };
+        docName = '未命名思维导图';
+      }
+      document.getElementById('docName').value = docName;
+      return;
+    } catch(e) { console.error('Load failed:', e); }
+  }
+  
+  // Fallback: migrate from old single-doc format
+  const old = localStorage.getItem('mindmap-local');
+  if (old) {
+    try {
+      const data = JSON.parse(old);
+      const docId = genDocId();
+      workspace = {
+        folders: [{ id: genFolderId(), name: '默认分类', docs: [docId], _collapsed: false }],
+        docs: { [docId]: { id: docId, name: data.name || '导入的脑图', tree: data.tree || tree, updatedAt: Date.now() } },
+        activeDocId: docId, activeFolderId: null
+      };
+      const doc = workspace.docs[docId];
+      tree = doc.tree || { id: 'root', title: '中心主题', children: [], collapsed: false, color: 0 };
+      docName = doc.name;
+      nodeIdCounter = countMaxId(tree) + 1;
+      activeNodeId = tree.id;
+      document.getElementById('docName').value = docName;
+      saveWorkspace();
+      localStorage.removeItem('mindmap-local');
+      return;
+    } catch(e) {}
+  }
 }
 
 // ==================== OUTLINE RENDERER ====================
@@ -1120,37 +1512,18 @@ document.getElementById('resizer').addEventListener('mousedown', (e) => {
 });
 
 // ==================== SAVE / LOAD ====================
-function scheduleSave() {
-  clearTimeout(window._saveTimeout);
-  window._saveTimeout = setTimeout(saveLocal, 500);
-}
+function scheduleSave() { saveWorkspace(); }
 
-function saveLocal() {
-  const data = { name: docName, tree, nodeIdCounter };
-  localStorage.setItem('mindmap-local', JSON.stringify(data));
-  if (currentRoomId && ws && ws.readyState === 1) {
-    ws.send(JSON.stringify({ type: 'update', data: tree }));
-  }
-}
+function saveLocal() { saveWorkspace(); }
 
-function loadLocal() {
-  const raw = localStorage.getItem('mindmap-local');
-  if (raw) {
-    try {
-      const data = JSON.parse(raw);
-      docName = data.name || '未命名思维导图';
-      tree = data.tree || { id: 'root', title: '中心主题', children: [], collapsed: false, color: 0 };
-      nodeIdCounter = data.nodeIdCounter || 1;
-      document.getElementById('docName').value = docName;
-    } catch(e) {
-      tree = { id: 'root', title: '中心主题', children: [], collapsed: false, color: 0 };
-    }
-  }
-}
+function loadLocal() { /* handled by init */ }
 
 document.getElementById('docName').addEventListener('input', (e) => {
   docName = e.target.value;
-  scheduleSave();
+  if (workspace.activeDocId && workspace.docs[workspace.activeDocId]) {
+    workspace.docs[workspace.activeDocId].name = docName;
+  }
+  saveWorkspace();
 });
 
 // ==================== TOOLBAR ACTIONS ====================
@@ -1554,18 +1927,22 @@ function autoParse(text) {
 }
 
 function applyImportedTree(newTree) {
-  pushUndo();
-  tree = newTree;
-  docName = newTree.title || '导入的思维导图';
-  document.getElementById('docName').value = docName;
-  // Reassign IDs to avoid conflicts
+  // Create new document for the imported content
   nodeIdCounter = 1;
-  reassignIds(tree);
-  activeNodeId = tree.id;
-  renderOutline();
-  if (currentView !== 'outline') renderMindmap();
-  scheduleSave();
-  showToast('✅ 导入成功！');
+  reassignIds(newTree);
+  const docId = genDocId();
+  const doc = { id: docId, name: newTree.title || '导入的脑图', tree: newTree, updatedAt: Date.now() };
+  workspace.docs[docId] = doc;
+  
+  // Add to first folder or root
+  if (workspace.folders.length > 0) {
+    workspace.folders[0].docs.push(docId);
+  }
+  
+  saveWorkspace();
+  switchDocument(docId);
+  renderDocTree();
+  showToast('✅ 导入成功！已创建新文档');
 }
 
 function reassignIds(node) {
@@ -1701,9 +2078,27 @@ function init() {
   
   // Load data
   loadLocal();
+  
+  // If no docs exist, create default
+  if (Object.keys(workspace.docs).length === 0) {
+    const docId = genDocId();
+    const folderId = genFolderId();
+    workspace = {
+      folders: [{ id: folderId, name: '默认分类', docs: [docId], _collapsed: false }],
+      docs: { [docId]: { id: docId, name: '未命名思维导图', tree: { id: 'root', title: '中心主题', children: [], collapsed: false, color: 0 }, updatedAt: Date.now() } },
+      activeDocId: docId
+    };
+    tree = workspace.docs[docId].tree;
+    docName = '未命名思维导图';
+    nodeIdCounter = 1;
+    activeNodeId = 'root';
+    saveWorkspace();
+  }
+  
   document.getElementById('docName').value = docName;
   
   // Render
+  renderDocTree();
   buildColorPalette();
   renderOutline();
   setView('outline');
