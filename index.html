@@ -335,6 +335,8 @@ body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; b
 <!-- Context menu -->
 <div class="ctx-menu" id="ctxMenu"></div>
 
+<script src="https://unpkg.com/peerjs@1.5.2/dist/peerjs.min.js"></script>
+
 <script>
 // ==================== DATA MODEL ====================
 // Workspace: multi-document with folders
@@ -640,10 +642,17 @@ function scheduleSave() {
       workspace.docs[workspace.activeDocId].tree = cloneTree(tree);
     }
     localStorage.setItem('mindmap-workspace', JSON.stringify(workspace));
+    // Broadcast to peers
+    if (peerConnections.length > 0) {
+      peerConnections.forEach(conn => {
+        if (conn.open) conn.send(JSON.stringify({ type: 'updated', data: cloneTree(tree) }));
+      });
+    }
+    if (ws && ws.readyState === 1) ws.send(JSON.stringify({ type: 'update', data: tree }));
   }, 500);
 }
 
-function saveLocal() { saveWorkspace(); }
+function saveLocal() { scheduleSave(); }
 
 function loadLocal() {
   const raw = localStorage.getItem('mindmap-workspace');
@@ -1496,12 +1505,6 @@ document.getElementById('resizer').addEventListener('mousedown', (e) => {
 });
 
 // ==================== SAVE / LOAD ====================
-function scheduleSave() { saveWorkspace(); }
-
-function saveLocal() { saveWorkspace(); }
-
-function loadLocal() { /* handled by init */ }
-
 document.getElementById('docName').addEventListener('input', (e) => {
   docName = e.target.value;
   if (workspace.activeDocId && workspace.docs[workspace.activeDocId]) {
@@ -1556,132 +1559,132 @@ function buildColorPalette() {
 let ws = null;
 let currentRoomId = null;
 let reconnectTimer = null;
+let peer = null;
+let peerConnections = [];
+let myPeerId = null;
+let isHost = false;
 
 function connectWS() {
-  // Only attempt WebSocket on localhost (server mode)
-  if (location.hostname !== 'localhost' && location.hostname !== '127.0.0.1') {
-    document.getElementById('collabStatus').textContent = '🌐 网页版';
+  if (location.hostname === 'localhost' || location.hostname === '127.0.0.1') {
+    initLocalServer();
     return;
   }
-  
-  const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
-  const wsUrl = `${protocol}//${location.host}`;
-  
+  document.getElementById('collabStatus').textContent = '🌐 网页版 | 点👥协作';
+}
+
+function initLocalServer() {
   try {
-    ws = new WebSocket(wsUrl);
-    
-    ws.onopen = () => {
-      document.getElementById('collabStatus').textContent = '🟢 已连接';
-      if (currentRoomId) {
-        ws.send(JSON.stringify({ type: 'join', roomId: currentRoomId, name: docName }));
-      }
-    };
-    
+    const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
+    ws = new WebSocket(`${protocol}//${location.host}`);
+    ws.onopen = () => { document.getElementById('collabStatus').textContent = '🟢 本地服务端'; };
+    ws.onerror = () => { document.getElementById('collabStatus').textContent = '💾 本地模式'; };
+    ws.onclose = () => { document.getElementById('collabStatus').textContent = '💾 本地模式'; };
     ws.onmessage = (e) => {
       const msg = JSON.parse(e.data);
-      switch (msg.type) {
-        case 'connected': break;
-        case 'joined':
-          document.getElementById('roomCode').textContent = msg.code;
-          document.getElementById('peerCount').textContent = `👤 ${msg.peers} 人在线`;
-          if (msg.data) { tree = msg.data; renderOutline(); renderMindmap(); }
-          showToast('✅ 已加入协作房间');
-          break;
-        case 'updated':
-          tree = msg.data;
-          renderOutline();
-          renderMindmap();
-          break;
-        case 'peer-joined':
-          document.getElementById('peerCount').textContent = `👤 ${msg.peers} 人在线`;
-          showToast('👤 有人加入');
-          break;
-        case 'peer-left':
-          document.getElementById('peerCount').textContent = `👤 ${msg.peers} 人在线`;
-          break;
+      if (msg.type === 'updated') { tree = msg.data; renderOutline(); renderMindmap(); }
+      if (msg.type === 'joined') {
+        document.getElementById('peerCount').textContent = `👤 ${msg.peers} 人在线`;
+        if (msg.data) { tree = msg.data; renderOutline(); renderMindmap(); }
+      }
+      if (msg.type === 'peer-joined' || msg.type === 'peer-left') {
+        document.getElementById('peerCount').textContent = `👤 ${msg.peers} 人在线`;
       }
     };
-    
-    ws.onclose = () => {
-      document.getElementById('collabStatus').textContent = '🔴 已断开';
-      if (currentRoomId) reconnectTimer = setTimeout(connectWS, 3000);
-    };
-    
-    ws.onerror = () => {
-      document.getElementById('collabStatus').textContent = '💾 本地模式';
-    };
-  } catch(e) {
-    document.getElementById('collabStatus').textContent = '💾 本地模式';
-  }
+  } catch(e) {}
 }
 
 function createRoom() {
-  if (location.hostname !== 'localhost' && location.hostname !== '127.0.0.1') {
-    showToast('🌐 网页版不支持协作。请下载服务端在本地运行：<br> github.com 查看 README');
+  document.getElementById('sidebar').classList.remove('hidden');
+  if (location.hostname === 'localhost' || location.hostname === '127.0.0.1') {
+    const name = docName || '未命名';
+    fetch('/api/rooms', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name, data: tree }) })
+      .then(r => r.json()).then(room => {
+        document.getElementById('roomCode').textContent = room.code;
+        document.getElementById('roomInfo').style.display = 'block';
+        if (ws && ws.readyState === 1) ws.send(JSON.stringify({ type: 'join', roomId: room.id, name }));
+        showToast('🏠 房间已创建！分享邀请码');
+      });
     return;
   }
-  const name = docName || '未命名思维导图';
-  fetch('/api/rooms', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ name, data: tree })
-  })
-  .then(r => r.json())
-  .then(room => {
-    currentRoomId = room.id;
-    document.getElementById('roomCode').textContent = room.code;
+  // P2P WebRTC
+  if (peer) peer.destroy();
+  peer = new Peer(undefined, { debug: 0 });
+  peer.on('open', (id) => {
+    myPeerId = id; isHost = true;
+    document.getElementById('roomCode').textContent = id;
     document.getElementById('roomInfo').style.display = 'block';
     document.getElementById('collabStatus').textContent = '🟢 协作中';
-    saveLocal();
-    if (ws && ws.readyState === 1) {
-      ws.send(JSON.stringify({ type: 'join', roomId: room.id, name }));
-    }
-    showToast('🏠 房间已创建！分享邀请码给朋友');
+    document.getElementById('peerCount').textContent = '👤 等待加入...';
+    showToast('🏠 房间已创建！复制ID发给朋友');
+  });
+  peer.on('connection', (conn) => {
+    peerConnections.push(conn);
+    conn.on('open', () => { conn.send(JSON.stringify({ type: 'fullSync', data: cloneTree(tree) })); updatePeerCount(); });
+    conn.on('data', (raw) => handlePeerData(raw));
+    conn.on('close', () => { peerConnections = peerConnections.filter(c => c !== conn); updatePeerCount(); });
   });
 }
 
+function handlePeerData(raw) {
+  try {
+    const msg = JSON.parse(raw);
+    if (msg.type === 'fullSync' || msg.type === 'updated') {
+      tree = msg.data; renderOutline(); renderMindmap();
+    }
+  } catch(e) {}
+}
+
+function updatePeerCount() {
+  const count = peerConnections.filter(c => c.open).length;
+  document.getElementById('peerCount').textContent = `👤 ${count + 1} 人在线`;
+}
+
 function joinRoom() {
-  if (location.hostname !== 'localhost' && location.hostname !== '127.0.0.1') {
-    showToast('🌐 网页版不支持协作。请在本地运行服务端');
+  const code = document.getElementById('joinCode').value.trim();
+  if (!code) { showToast('请输入对方分享的ID'); return; }
+  
+  if (location.hostname === 'localhost' || location.hostname === '127.0.0.1') {
+    fetch(`/api/rooms/code/${code}`).then(r => r.json()).then(room => {
+      document.getElementById('roomCode').textContent = code;
+      document.getElementById('roomInfo').style.display = 'block';
+      if (ws && ws.readyState === 1) ws.send(JSON.stringify({ type: 'join', roomId: room.id }));
+      return fetch(`/api/rooms/${room.id}`);
+    }).then(r => r ? r.json() : null).then(data => {
+      if (data && data.data) { tree = data.data; renderOutline(); renderMindmap(); showToast('✅ 已加入！'); }
+    }).catch(() => showToast('❌ 房间不存在'));
     return;
   }
-  const code = document.getElementById('joinCode').value.trim().toUpperCase();
-  if (!code || code.length !== 6) {
-    showToast('请输入6位邀请码');
-    return;
-  }
-  fetch(`/api/rooms/code/${code}`)
-    .then(r => r.json())
-    .then(room => {
-      if (room.error) throw new Error(room.error);
-      currentRoomId = room.id;
+  
+  // P2P WebRTC
+  if (peer) peer.destroy();
+  peer = new Peer(undefined, { debug: 0 });
+  peer.on('open', () => {
+    const conn = peer.connect(code, { reliable: true });
+    conn.on('open', () => {
+      peerConnections = [conn]; myPeerId = code;
       document.getElementById('roomCode').textContent = code;
       document.getElementById('roomInfo').style.display = 'block';
       document.getElementById('collabStatus').textContent = '🟢 协作中';
-      if (ws && ws.readyState === 1) {
-        ws.send(JSON.stringify({ type: 'join', roomId: room.id }));
-      }
-      // Fetch full data
-      return fetch(`/api/rooms/${room.id}`);
-    })
-    .then(r => r ? r.json() : null)
-    .then(data => {
-      if (data && data.data) {
-        tree = data.data;
-        renderOutline();
-        renderMindmap();
-        showToast('✅ 成功加入房间');
-      }
-    })
-    .catch(err => showToast('❌ ' + err.message));
+      document.getElementById('peerCount').textContent = '👤 已连接';
+      showToast('✅ 已加入协作！');
+    });
+    conn.on('data', (raw) => handlePeerData(raw));
+    conn.on('close', () => { peerConnections = []; document.getElementById('collabStatus').textContent = '🔴 断开'; });
+  });
+  peer.on('error', (err) => {
+    if (err.type === 'peer-unavailable') showToast('❌ 找不到该房间，请确认对方在线且ID正确');
+  });
 }
 
 function leaveRoom() {
-  currentRoomId = null;
+  peerConnections.forEach(c => c.close()); peerConnections = [];
+  if (peer) { peer.destroy(); peer = null; }
+  myPeerId = null; isHost = false;
+  if (ws) { try { ws.close(); } catch(e) {} ws = null; }
   document.getElementById('roomInfo').style.display = 'none';
   document.getElementById('collabStatus').textContent = '💾 本地模式';
-  if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; }
-  showToast('已离开房间，切换为本地模式');
+  document.getElementById('peerCount').textContent = '';
+  showToast('已离开房间');
 }
 
 function copyCode() {
@@ -1694,18 +1697,12 @@ function copyCode() {
 }
 
 function showCollab() {
-  const sidebar = document.getElementById('sidebar');
+  document.getElementById('sidebar').classList.toggle('hidden');
   const collabSec = document.getElementById('collabSection');
   const shareSec = document.getElementById('shareSection');
-  sidebar.classList.toggle('hidden');
-  if (location.hostname !== 'localhost' && location.hostname !== '127.0.0.1') {
-    // Web version: show sharing guide instead of WS collab
-    if (collabSec) collabSec.style.display = 'none';
-    if (shareSec) shareSec.style.display = 'block';
-  } else {
-    if (collabSec) collabSec.style.display = 'block';
-    if (shareSec) shareSec.style.display = 'none';
-  }
+  if (collabSec) collabSec.style.display = 'block';
+  if (shareSec) shareSec.style.display = 'none';
+  document.getElementById('joinCode').placeholder = '输入对方分享的ID';
 }
 
 // ==================== EXPORT ====================
