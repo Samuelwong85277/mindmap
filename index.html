@@ -1005,39 +1005,46 @@ function renderMindmapDebounced() {
 function renderMindmap() {
   svgEl = document.getElementById('mindmapSvg');
   if (!svgEl) return;
-  
   svgEl.innerHTML = '';
-  
-  // Defs for markers
+
+  // Gradient definitions
   const defs = document.createElementNS('http://www.w3.org/2000/svg', 'defs');
-  const marker = document.createElementNS('http://www.w3.org/2000/svg', 'marker');
-  marker.setAttribute('id', 'arrow');
-  marker.setAttribute('viewBox', '0 0 10 10');
-  marker.setAttribute('refX', '10');
-  marker.setAttribute('refY', '5');
-  marker.setAttribute('markerWidth', '6');
-  marker.setAttribute('markerHeight', '6');
-  marker.setAttribute('orient', 'auto');
-  const arrowPath = document.createElementNS('http://www.w3.org/2000/svg', 'path');
-  arrowPath.setAttribute('d', 'M0,0 L10,5 L0,10 Z');
-  arrowPath.setAttribute('fill', '#c0c0c0');
-  marker.appendChild(arrowPath);
-  defs.appendChild(marker);
+  branchColors.forEach((color, i) => {
+    const grad = document.createElementNS('http://www.w3.org/2000/svg', 'linearGradient');
+    grad.setAttribute('id', `grad${i}`);
+    grad.setAttribute('x1', '0%'); grad.setAttribute('y1', '0%');
+    grad.setAttribute('x2', '100%'); grad.setAttribute('y2', '100%');
+    const s1 = document.createElementNS('http://www.w3.org/2000/svg', 'stop');
+    s1.setAttribute('offset', '0%'); s1.setAttribute('stop-color', color); s1.setAttribute('stop-opacity', '0.9');
+    grad.appendChild(s1);
+    const s2 = document.createElementNS('http://www.w3.org/2000/svg', 'stop');
+    s2.setAttribute('offset', '100%'); s2.setAttribute('stop-color', color); s2.setAttribute('stop-opacity', '0.7');
+    grad.appendChild(s2);
+    defs.appendChild(grad);
+    
+    // Shadow filter
+    const filter = document.createElementNS('http://www.w3.org/2000/svg', 'filter');
+    filter.setAttribute('id', `shadow${i}`);
+    filter.setAttribute('x', '-10%'); filter.setAttribute('y', '-10%');
+    filter.setAttribute('width', '130%'); filter.setAttribute('height', '130%');
+    const feDrop = document.createElementNS('http://www.w3.org/2000/svg', 'feDropShadow');
+    feDrop.setAttribute('dx', '0'); feDrop.setAttribute('dy', '2');
+    feDrop.setAttribute('stdDeviation', '3'); feDrop.setAttribute('flood-color', color);
+    feDrop.setAttribute('flood-opacity', '0.25');
+    filter.appendChild(feDrop);
+    defs.appendChild(filter);
+  });
   svgEl.appendChild(defs);
 
   gEl = document.createElementNS('http://www.w3.org/2000/svg', 'g');
   gEl.setAttribute('transform', `translate(${mindmapTransform.x},${mindmapTransform.y}) scale(${mindmapTransform.scale})`);
+  svgEl.appendChild(gEl); // CRITICAL: append BEFORE adding event listeners
   
   const nodeMap = new Map();
   layoutTree(tree, nodeMap);
-  
-  // Draw connections first (behind nodes)
   drawConnections(tree, nodeMap, gEl);
-  
-  // Draw nodes
   drawNodes(tree, nodeMap, gEl);
   
-  svgEl.appendChild(gEl);
   mindmapDirty = false;
   
   // Pan and zoom
@@ -1055,34 +1062,36 @@ function renderMindmap() {
       gEl.setAttribute('transform', `translate(${mindmapTransform.x},${mindmapTransform.y}) scale(${mindmapTransform.scale})`);
     }
   };
-  svgEl.onmouseup = () => { isPanning = false; svgEl.style.cursor = 'grab'; };
-  svgEl.onmouseleave = () => { isPanning = false; svgEl.style.cursor = 'grab'; };
+  document.addEventListener('mouseup', () => { isPanning = false; svgEl.style.cursor = 'grab'; });
   svgEl.onwheel = (e) => {
     e.preventDefault();
     const factor = e.deltaY < 0 ? 1.1 : 0.9;
-    mindmapTransform.scale = Math.max(0.2, Math.min(3, mindmapTransform.scale * factor));
+    mindmapTransform.scale = Math.max(0.15, Math.min(3, mindmapTransform.scale * factor));
     gEl.setAttribute('transform', `translate(${mindmapTransform.x},${mindmapTransform.y}) scale(${mindmapTransform.scale})`);
   };
   svgEl.style.cursor = 'grab';
 }
 
+// Layout: larger, better spaced nodes
+const NODE_W = 160, NODE_H = 44, ROOT_W = 200, ROOT_H = 56, HGAP = 80, VGAP = 12;
+
 function layoutTree(node, nodeMap) {
-  const config = { nodeWidth: 140, nodeHeight: 36, hGap: 60, vGap: 8 };
-  
   function measure(n) {
     if (!n.children || n.children.length === 0 || n.collapsed) {
-      n._w = config.nodeWidth;
-      n._h = config.nodeHeight;
+      n._w = n.id === 'root' ? ROOT_W : NODE_W;
+      n._h = n.id === 'root' ? ROOT_H : NODE_H;
+      n._totalH = n._h;
       return;
     }
     let totalH = 0;
     for (const child of n.children) {
       measure(child);
-      totalH += child._totalH || child._h;
+      totalH += child._totalH;
     }
-    totalH += (n.children.length - 1) * config.vGap;
-    n._totalH = Math.max(totalH, config.nodeHeight);
-    n._h = config.nodeHeight;
+    totalH += (n.children.length - 1) * VGAP;
+    n._totalH = Math.max(totalH, n._h || NODE_H);
+    n._h = n.id === 'root' ? ROOT_H : NODE_H;
+    n._w = n.id === 'root' ? ROOT_W : NODE_W;
   }
   measure(node);
 
@@ -1090,173 +1099,184 @@ function layoutTree(node, nodeMap) {
     n._x = x;
     n._y = y + ((n._totalH || n._h) - n._h) / 2;
     nodeMap.set(n.id, n);
-    
     if (n.children && n.children.length > 0 && !n.collapsed) {
       let cy = y;
       for (const child of n.children) {
-        const childTotalH = child._totalH || child._h;
-        layout(child, x + config.nodeWidth + config.hGap, cy);
-        cy += childTotalH + config.vGap;
+        const childH = child._totalH;
+        layout(child, x + (n._w) + HGAP, cy);
+        cy += childH + VGAP;
       }
     }
   }
-
-  layout(node, 80, 40);
+  layout(node, 60, 60);
 }
 
 function drawConnections(node, nodeMap, parent) {
   if (!node.children || node.collapsed) return;
-  
   for (const child of node.children) {
     const p = nodeMap.get(node.id);
     const c = nodeMap.get(child.id);
     if (!p || !c) continue;
-    
-    const x1 = p._x + 140;
-    const y1 = p._y + 18;
+    const color = branchColors[child.color || 0];
+    const x1 = p._x + p._w;
+    const y1 = p._y + p._h / 2;
     const x2 = c._x;
-    const y2 = c._y + 18;
+    const y2 = c._y + c._h / 2;
+    const midX = x1 + (x2 - x1) * 0.5;
     
     const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
-    const cx1 = x1 + (x2 - x1) * 0.4;
-    const cx2 = x1 + (x2 - x1) * 0.6;
-    path.setAttribute('d', `M${x1},${y1} C${cx1},${y1} ${cx2},${y2} ${x2},${y2}`);
-    path.setAttribute('stroke', branchColors[child.color || 0]);
-    path.setAttribute('stroke-width', '1.5');
+    path.setAttribute('d', `M${x1},${y1} C${midX},${y1} ${midX},${y2} ${x2},${y2}`);
+    path.setAttribute('stroke', color);
+    path.setAttribute('stroke-width', '2');
     path.setAttribute('fill', 'none');
-    path.setAttribute('opacity', '0.5');
+    path.setAttribute('opacity', '0.4');
+    path.setAttribute('stroke-linecap', 'round');
     parent.appendChild(path);
-    
     drawConnections(child, nodeMap, parent);
   }
 }
 
-function drawNodes(node, nodeMap, parent) {
+function drawNodes(node, nodeMap, parentEl) {
   const n = nodeMap.get(node.id);
   if (!n) return;
   
   const isActive = node.id === activeNodeId;
+  const isRoot = node.id === 'root';
   const color = branchColors[node.color || 0];
+  const w = n._w, h = n._h;
   
+  // Group
   const g = document.createElementNS('http://www.w3.org/2000/svg', 'g');
   g.setAttribute('data-id', node.id);
   g.style.cursor = 'pointer';
   
-  // Node background
-  const rect = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
-  rect.setAttribute('x', n._x);
-  rect.setAttribute('y', n._y);
-  rect.setAttribute('width', 140);
-  rect.setAttribute('height', 36);
-  rect.setAttribute('rx', 6);
-  rect.setAttribute('fill', isActive ? color : '#ffffff');
-  rect.setAttribute('stroke', color);
-  rect.setAttribute('stroke-width', isActive ? 2 : 1);
-  rect.setAttribute('filter', 'drop-shadow(0 1px 2px rgba(0,0,0,0.08))');
-  g.appendChild(rect);
+  // Card background with subtle left accent
+  const bg = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
+  bg.setAttribute('x', n._x); bg.setAttribute('y', n._y);
+  bg.setAttribute('width', w); bg.setAttribute('height', h);
+  bg.setAttribute('rx', isRoot ? 12 : 8); bg.setAttribute('ry', isRoot ? 12 : 8);
+  if (isActive) {
+    bg.setAttribute('fill', `url(#grad${node.color || 0})`);
+    bg.setAttribute('filter', `url(#shadow${node.color || 0})`);
+  } else {
+    bg.setAttribute('fill', '#ffffff');
+    bg.setAttribute('stroke', color);
+    bg.setAttribute('stroke-width', '1.5');
+  }
+  g.appendChild(bg);
+  
+  // Left accent bar
+  if (!isActive) {
+    const accent = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
+    accent.setAttribute('x', n._x); accent.setAttribute('y', n._y + 4);
+    accent.setAttribute('width', '4'); accent.setAttribute('height', h - 8);
+    accent.setAttribute('rx', '2');
+    accent.setAttribute('fill', color);
+    accent.setAttribute('opacity', '0.8');
+    g.appendChild(accent);
+  }
   
   // Text
+  const fontSize = isRoot ? 15 : 13;
+  const fillColor = isActive ? '#ffffff' : '#1a1a2e';
+  const displayTitle = node.title || (isRoot ? '中心主题' : '新节点');
+  const truncated = displayTitle.length > (isRoot ? 16 : 14) ? displayTitle.substring(0, (isRoot ? 15 : 13)) + '…' : displayTitle;
+  
   const text = document.createElementNS('http://www.w3.org/2000/svg', 'text');
-  text.setAttribute('x', n._x + 10);
-  text.setAttribute('y', n._y + 22);
-  text.setAttribute('fill', isActive ? '#ffffff' : '#1a1a2e');
-  text.setAttribute('font-size', '12');
-  text.setAttribute('font-family', '-apple-system, BlinkMacSystemFont, sans-serif');
-  text.textContent = node.title.length > 18 ? node.title.substring(0, 17) + '…' : node.title;
+  text.setAttribute('x', n._x + 16);
+  text.setAttribute('y', n._y + h / 2 + fontSize / 3);
+  text.setAttribute('fill', fillColor);
+  text.setAttribute('font-size', fontSize);
+  text.setAttribute('font-weight', isRoot ? '600' : '400');
+  text.setAttribute('font-family', '-apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif');
   text.setAttribute('pointer-events', 'none');
+  text.textContent = truncated;
   g.appendChild(text);
   
-  // Add child "+" button
-  if (n._x !== undefined) {
-    const addBtn = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
-    addBtn.setAttribute('cx', n._x + 140 + 20);
-    addBtn.setAttribute('cy', n._y + 18);
-    addBtn.setAttribute('r', 8);
-    addBtn.setAttribute('fill', color);
-    addBtn.setAttribute('opacity', node.id === activeNodeId ? '0.9' : '0');
-    addBtn.setAttribute('class', 'mm-add-btn');
-    g.appendChild(addBtn);
-    const addPlus = document.createElementNS('http://www.w3.org/2000/svg', 'text');
-    addPlus.setAttribute('x', n._x + 140 + 20);
-    addPlus.setAttribute('y', n._y + 22);
-    addPlus.setAttribute('text-anchor', 'middle');
-    addPlus.setAttribute('font-size', '12');
-    addPlus.setAttribute('fill', '#fff');
-    addPlus.setAttribute('font-weight', 'bold');
-    addPlus.textContent = '+';
-    addPlus.setAttribute('class', 'mm-add-btn');
-    addPlus.setAttribute('opacity', node.id === activeNodeId ? '0.9' : '0');
-    addPlus.style.pointerEvents = 'none';
-    g.appendChild(addPlus);
-  }
+  // Add child "+" button (circle on the right connector line)
+  const btnX = n._x + w + HGAP / 2;
+  const btnY = n._y + h / 2;
+  const btnG = document.createElementNS('http://www.w3.org/2000/svg', 'g');
+  btnG.setAttribute('class', 'mm-add-group');
+  btnG.setAttribute('opacity', '0');
+  btnG.style.cursor = 'pointer';
+  
+  const btnCircle = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
+  btnCircle.setAttribute('cx', btnX); btnCircle.setAttribute('cy', btnY);
+  btnCircle.setAttribute('r', '10');
+  btnCircle.setAttribute('fill', color);
+  btnCircle.setAttribute('stroke', '#fff');
+  btnCircle.setAttribute('stroke-width', '2');
+  btnG.appendChild(btnCircle);
+  
+  const btnText = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+  btnText.setAttribute('x', btnX); btnText.setAttribute('y', btnY + 4);
+  btnText.setAttribute('text-anchor', 'middle');
+  btnText.setAttribute('font-size', '14');
+  btnText.setAttribute('fill', '#fff');
+  btnText.setAttribute('font-weight', 'bold');
+  btnText.setAttribute('pointer-events', 'none');
+  btnText.textContent = '+';
+  btnG.appendChild(btnText);
+  
+  g.appendChild(btnG);
   
   // Child count badge
   if (node.children && node.children.length > 0 && !node.collapsed) {
+    const bX = n._x + w - 14; const bY = n._y + 6;
     const badge = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
-    badge.setAttribute('cx', n._x + 140 - 12);
-    badge.setAttribute('cy', n._y + 8);
-    badge.setAttribute('r', 8);
-    badge.setAttribute('fill', '#e0e0e0');
+    badge.setAttribute('cx', bX); badge.setAttribute('cy', bY);
+    badge.setAttribute('r', '9');
+    badge.setAttribute('fill', isActive ? 'rgba(255,255,255,0.3)' : '#f0f0f0');
     badge.setAttribute('pointer-events', 'none');
     g.appendChild(badge);
-    const badgeText = document.createElementNS('http://www.w3.org/2000/svg', 'text');
-    badgeText.setAttribute('x', n._x + 140 - 12);
-    badgeText.setAttribute('y', n._y + 12);
-    badgeText.setAttribute('text-anchor', 'middle');
-    badgeText.setAttribute('font-size', '9');
-    badgeText.setAttribute('fill', '#666');
-    badgeText.setAttribute('pointer-events', 'none');
-    badgeText.textContent = node.children.length;
-    g.appendChild(badgeText);
+    const bTxt = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+    bTxt.setAttribute('x', bX); bTxt.setAttribute('y', bY + 3);
+    bTxt.setAttribute('text-anchor', 'middle');
+    bTxt.setAttribute('font-size', '10');
+    bTxt.setAttribute('fill', isActive ? '#fff' : '#888');
+    bTxt.setAttribute('pointer-events', 'none');
+    bTxt.textContent = node.children.length;
+    g.appendChild(bTxt);
   }
   
-  // Hover effects
+  // Hover: show + button
   g.addEventListener('mouseenter', () => {
-    if (node.id !== activeNodeId) {
-      rect.setAttribute('fill', '#f0f4ff');
-    }
-    // Show add button
-    const btns = g.querySelectorAll('.mm-add-btn');
-    btns.forEach(b => b.setAttribute('opacity', '0.7'));
+    btnG.setAttribute('opacity', '0.85');
   });
   g.addEventListener('mouseleave', () => {
-    if (node.id !== activeNodeId) {
-      rect.setAttribute('fill', '#ffffff');
-    }
-    const btns = g.querySelectorAll('.mm-add-btn');
-    btns.forEach(b => b.setAttribute('opacity', node.id === activeNodeId ? '0.9' : '0'));
+    btnG.setAttribute('opacity', '0');
   });
   
-  // Click: select node
+  // Click: select node OR add child (if + button)
   g.addEventListener('click', (e) => {
-    // Check if click was on the "+" button area
-    const svg = document.getElementById('mindmapSvg');
-    const pt = svg.createSVGPoint();
-    pt.x = e.clientX; pt.y = e.clientY;
-    const ctm = g.getScreenCTM();
-    if (ctm) {
-      const localPt = pt.matrixTransform(ctm.inverse());
-      if (localPt.x > n._x + 140 && localPt.x < n._x + 160 && 
-          localPt.y > n._y + 8 && localPt.y < n._y + 28) {
-        e.stopPropagation();
-        pushUndo();
-        addChildNode(node);
-        renderOutline();
-        renderMindmap();
-        return;
-      }
-    }
     e.stopPropagation();
+    const svgRect = svgEl.getBoundingClientRect();
+    // Convert screen coords to transformed SVG coords
+    const mx = (e.clientX - svgRect.left - mindmapTransform.x) / mindmapTransform.scale;
+    const my = (e.clientY - svgRect.top - mindmapTransform.y) / mindmapTransform.scale;
+    
+    // Check if click is on + button
+    const dx = mx - btnX; const dy = my - btnY;
+    if (Math.sqrt(dx*dx + dy*dy) < 14) {
+      pushUndo();
+      addChildNode(node);
+      renderOutline();
+      renderMindmap();
+      return;
+    }
+    
     activeNodeId = node.id;
     updateActiveStyles();
     renderOutline();
     renderMindmap();
   });
   
-  // Double-click: inline edit in mind map
+  // Double-click: inline edit
   g.addEventListener('dblclick', (e) => {
     e.stopPropagation();
-    showMindmapInlineEdit(node, n);
+    e.preventDefault();
+    showMindmapInlineEdit(node, n._x, n._y, w, h);
   });
   
   // Right-click: context menu
@@ -1268,146 +1288,120 @@ function drawNodes(node, nodeMap, parent) {
     showMindmapContextMenu(e.clientX, e.clientY, node);
   });
   
-  // Drag to reorder
-  g.addEventListener('mousedown', (e) => {
-    if (e.button !== 0) return;
-    const svg = document.getElementById('mindmapSvg');
-    const pt = svg.createSVGPoint();
-    pt.x = e.clientX; pt.y = e.clientY;
-    const ctm = g.getScreenCTM();
-    if (ctm) {
-      const localPt = pt.matrixTransform(ctm.inverse());
-      if (localPt.x > n._x + 140) return; // Ignore + button area
-    }
-    
-    const startX = e.clientX;
-    const startY = e.clientY;
-    let dragged = false;
-    
-    const onMove = (ev) => {
-      const dx = Math.abs(ev.clientX - startX);
-      const dy = Math.abs(ev.clientY - startY);
-      if (dx > 5 || dy > 5) dragged = true;
-    };
-    const onUp = (ev) => {
-      document.removeEventListener('mousemove', onMove);
-      document.removeEventListener('mouseup', onUp);
-      if (dragged && node.id !== 'root') {
-        // Find target node
-        const target = findDropTargetMindmap(ev.clientX, ev.clientY, nodeMap, node.id);
-        if (target && target !== node.id) {
-          pushUndo();
-          moveNodeMindmap(node.id, target);
-          renderOutline();
-          renderMindmap();
-          scheduleSave();
-        }
-      }
-    };
-    document.addEventListener('mousemove', onMove);
-    document.addEventListener('mouseup', onUp);
-  });
-  
-  parent.appendChild(g);
+  parentEl.appendChild(g);
   
   // Recurse
   if (node.children && !node.collapsed) {
-    node.children.forEach(child => drawNodes(child, nodeMap, parent));
+    node.children.forEach(child => drawNodes(child, nodeMap, parentEl));
   }
 }
 
-// Mind map inline edit
-function showMindmapInlineEdit(node, pos) {
+// Mind map inline edit - positioned correctly
+function showMindmapInlineEdit(node, x, y, w, h) {
   const panel = document.getElementById('mindmapPanel');
-  // Remove existing
-  const old = panel.querySelector('.mm-inline-edit');
-  if (old) old.remove();
+  const oldEl = panel.querySelector('.mm-inline-edit');
+  if (oldEl) oldEl.remove();
+  
+  const svgRect = svgEl.getBoundingClientRect();
+  const scale = mindmapTransform.scale;
+  const tx = mindmapTransform.x, ty = mindmapTransform.y;
   
   const input = document.createElement('input');
   input.className = 'mm-inline-edit';
   input.value = node.title;
-  const svgRect = document.getElementById('mindmapSvg').getBoundingClientRect();
   input.style.cssText = `
     position:absolute; z-index:50;
-    left:${svgRect.left + pos._x * mindmapTransform.scale + mindmapTransform.x}px;
-    top:${svgRect.top + pos._y * mindmapTransform.scale + mindmapTransform.y}px;
-    width:${140 * mindmapTransform.scale}px; height:${36 * mindmapTransform.scale}px;
-    font-size:${12 * mindmapTransform.scale}px; padding:4px 8px;
-    border:2px solid ${branchColors[node.color||0]}; border-radius:6px;
+    left:${svgRect.left + x * scale + tx}px;
+    top:${svgRect.top + y * scale + ty}px;
+    width:${w * scale}px; height:${h * scale}px;
+    font-size:${(node.id==='root'?15:13) * scale}px; padding:4px 12px;
+    border:2px solid ${branchColors[node.color||0]}; border-radius:${node.id==='root'?12:8}px;
     background:#fff; outline:none; font-family:inherit;
-    box-shadow:0 2px 8px rgba(0,0,0,0.2);
+    box-shadow:0 4px 16px rgba(0,0,0,0.2); box-sizing:border-box;
   `;
   
-  input.addEventListener('blur', () => {
-    pushUndo();
-    node.title = input.value || node.title;
+  const save = () => {
+    const newTitle = input.value.trim();
+    if (newTitle && newTitle !== node.title) {
+      pushUndo();
+      node.title = newTitle;
+      renderOutline();
+      renderMindmap();
+      scheduleSave();
+    }
     input.remove();
-    renderOutline();
-    renderMindmap();
-    scheduleSave();
-  });
+  };
+  
+  input.addEventListener('blur', save);
   input.addEventListener('keydown', (e) => {
-    if (e.key === 'Enter') { input.blur(); }
+    if (e.key === 'Enter') { e.preventDefault(); save(); }
     if (e.key === 'Escape') { input.value = node.title; input.blur(); }
+    if (e.key === 'Tab') {
+      e.preventDefault();
+      const newTitle = input.value.trim();
+      if (newTitle) { pushUndo(); node.title = newTitle; }
+      pushUndo(); addChildNode(node);
+      input.remove();
+      renderOutline(); renderMindmap(); scheduleSave();
+    }
   });
   
   panel.appendChild(input);
-  setTimeout(() => { input.focus(); input.select(); }, 50);
+  setTimeout(() => { input.focus(); input.select(); }, 30);
 }
 
 // Mind map context menu
 function showMindmapContextMenu(x, y, node) {
   const menu = document.getElementById('ctxMenu');
   menu.innerHTML = `
-    <div class="item" onclick="mindmapEditNode()">✏️ 编辑文字</div>
-    <div class="item" onclick="mindmapAddChild()">➕ 添加子节点 <span class="key">Tab</span></div>
-    <div class="item" onclick="mindmapAddSibling()">↳ 添加同级 <span class="key">Enter</span></div>
-    <div class="item" onclick="mindmapDeleteNode()">🗑️ 删除节点</div>
-    <div class="item" onclick="mindmapChangeColor()">🎨 切换颜色</div>
-    <div class="item" onclick="mindmapToggleCollapse()">📂 折叠/展开</div>
+    <div class="item" onclick="mmEditNode()">✏️ 编辑文字</div>
+    <div class="item" onclick="mmAddChild()">➕ 添加子节点</div>
+    <div class="item" onclick="mmAddSibling()">↳ 添加同级</div>
+    <div class="item" onclick="mmDelNode()">🗑️ 删除节点</div>
+    <div class="item" onclick="mmColor()">🎨 切换颜色</div>
+    <div class="item" onclick="mmCollapse()">📂 折叠/展开</div>
   `;
   menu.style.display = 'block';
   menu.style.left = Math.min(x, window.innerWidth - 180) + 'px';
   menu.style.top = Math.min(y, window.innerHeight - 220) + 'px';
-  window._mmContextNode = node;
+  window._mmNode = node;
 }
 
-function mindmapEditNode() {
-  const node = window._mmContextNode || findNode(activeNodeId, tree);
+function mmEditNode() {
+  const node = window._mmNode;
   if (!node) return;
   document.getElementById('ctxMenu').style.display = 'none';
-  const nodeMap = new Map(); layoutTree(tree, nodeMap);
-  const pos = nodeMap.get(node.id);
-  if (pos) showMindmapInlineEdit(node, pos);
+  const nm = new Map(); layoutTree(tree, nm);
+  const pos = nm.get(node.id);
+  if (pos) showMindmapInlineEdit(node, pos._x, pos._y, pos._w, pos._h);
 }
-function mindmapAddChild() {
-  const node = window._mmContextNode || findNode(activeNodeId, tree);
+function mmAddChild() {
+  const node = window._mmNode || findNode(activeNodeId, tree);
   if (!node) return;
   document.getElementById('ctxMenu').style.display = 'none';
   pushUndo(); addChildNode(node); renderOutline(); renderMindmap(); scheduleSave();
 }
-function mindmapAddSibling() {
-  const node = window._mmContextNode || findNode(activeNodeId, tree);
+function mmAddSibling() {
+  const node = window._mmNode || findNode(activeNodeId, tree);
   if (!node || node.id === 'root') return;
   document.getElementById('ctxMenu').style.display = 'none';
   pushUndo(); addSiblingNode(node); renderOutline(); renderMindmap(); scheduleSave();
 }
-function mindmapDeleteNode() {
-  const node = window._mmContextNode || findNode(activeNodeId, tree);
+function mmDelNode() {
+  const node = window._mmNode || findNode(activeNodeId, tree);
   if (!node || node.id === 'root') return;
   document.getElementById('ctxMenu').style.display = 'none';
   pushUndo(); deleteNode(node); renderOutline(); renderMindmap(); scheduleSave();
 }
-function mindmapChangeColor() {
-  const node = window._mmContextNode || findNode(activeNodeId, tree);
+function mmColor() {
+  const node = window._mmNode || findNode(activeNodeId, tree);
   if (!node) return;
   document.getElementById('ctxMenu').style.display = 'none';
-  pushUndo();
-  node.color = ((node.color || 0) + 1) % 8;
+  pushUndo(); node.color = ((node.color || 0) + 1) % 8;
   renderOutline(); renderMindmap(); scheduleSave();
 }
-function mindmapToggleCollapse() {
-  const node = window._mmContextNode || findNode(activeNodeId, tree);
+function mmCollapse() {
+  const node = window._mmNode || findNode(activeNodeId, tree);
   if (!node) return;
   document.getElementById('ctxMenu').style.display = 'none';
   node.collapsed = !node.collapsed;
@@ -1415,17 +1409,13 @@ function mindmapToggleCollapse() {
 }
 
 function findDropTargetMindmap(x, y, nodeMap, excludeId) {
-  let closest = null;
-  let minDist = Infinity;
+  let closest = null, minDist = 200;
   for (const [id, pos] of nodeMap) {
     if (id === excludeId) continue;
-    const cx = pos._x + 70;
-    const cy = pos._y + 18;
+    const cx = pos._x + pos._w / 2;
+    const cy = pos._y + pos._h / 2;
     const dist = Math.sqrt((x - cx) ** 2 + (y - cy) ** 2);
-    if (dist < minDist && dist < 100) {
-      minDist = dist;
-      closest = id;
-    }
+    if (dist < minDist) { minDist = dist; closest = id; }
   }
   return closest;
 }
@@ -1434,20 +1424,14 @@ function moveNodeMindmap(nodeId, targetId) {
   const node = findNode(nodeId, tree);
   const targetNode = findNode(targetId, tree);
   if (!node || !targetNode || nodeId === targetId) return;
-  
-  // Remove from old parent
   const oldParent = findParent(nodeId, tree);
   if (oldParent) oldParent.children = oldParent.children.filter(c => c.id !== nodeId);
-  
-  // Add to target as sibling
   const targetParent = findParent(targetId, tree);
   if (targetParent) {
     const idx = targetParent.children.findIndex(c => c.id === targetId);
     targetParent.children.splice(idx + 1, 0, node);
     node.color = targetNode.color;
-  } else {
-    tree.children.push(node);
-  }
+  } else tree.children.push(node);
 }
 
 // ==================== VIEW MANAGEMENT ====================
